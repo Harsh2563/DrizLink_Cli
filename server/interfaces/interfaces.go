@@ -1,6 +1,7 @@
 package interfaces
 
 import (
+	"encoding/json"
 	"net"
 	"sync"
 )
@@ -14,10 +15,30 @@ type Server struct {
 }
 
 type Message struct {
-	SenderId       string
-	SenderUsername string
-	Content        string
-	Timestamp      string
+	SenderId       string `json:"senderId"`
+	SenderUsername string `json:"senderUsername"`
+	Content        string `json:"content"`
+	Timestamp      string `json:"timestamp"`
+	Type           string `json:"type"` // "chat", "system", "command"
+}
+
+// ToJSON converts a Message to JSON string
+func (m *Message) ToJSON() (string, error) {
+	data, err := json.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// FromJSON creates a Message from JSON string
+func MessageFromJSON(jsonStr string) (*Message, error) {
+	var msg Message
+	err := json.Unmarshal([]byte(jsonStr), &msg)
+	if err != nil {
+		return nil, err
+	}
+	return &msg, nil
 }
 
 type User struct {

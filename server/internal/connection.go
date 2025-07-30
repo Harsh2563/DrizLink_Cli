@@ -66,7 +66,7 @@ func HandleConnection(conn net.Conn, server *interfaces.Server) {
 
 		// Encrypt and broadcast welcome back message
 		welcomeMsg := fmt.Sprintf("User %s has rejoined the chat", existingUser.Username)
-		BroadcastMessage(welcomeMsg, server, existingUser)
+		BroadcastSystemMessage(welcomeMsg, server, existingUser)
 
 		// Start handling messages for the reconnected user
 		handleUserMessages(conn, existingUser, server)
@@ -105,7 +105,7 @@ func HandleConnection(conn net.Conn, server *interfaces.Server) {
 	server.Mutex.Unlock()
 
 	welcomeMsg := fmt.Sprintf("User %s has joined the chat", username)
-	BroadcastMessage(welcomeMsg, server, user)
+	BroadcastSystemMessage(welcomeMsg, server, user)
 
 	fmt.Printf("New user connected: %s (ID: %s)\n", username, userId)
 
@@ -123,7 +123,7 @@ func handleUserMessages(conn net.Conn, user *interfaces.User, server *interfaces
 			user.IsOnline = false
 			server.Mutex.Unlock()
 			offlineMsg := fmt.Sprintf("User %s is now offline", user.Username)
-			BroadcastMessage(offlineMsg, server, user)
+			BroadcastSystemMessage(offlineMsg, server, user)
 			return
 		}
 
@@ -135,7 +135,7 @@ func handleUserMessages(conn net.Conn, user *interfaces.User, server *interfaces
 			user.IsOnline = false
 			server.Mutex.Unlock()
 			offlineMsg := fmt.Sprintf("User %s is now offline", user.Username)
-			BroadcastMessage(offlineMsg, server, user)
+			BroadcastSystemMessage(offlineMsg, server, user)
 			return
 		case strings.HasPrefix(messageContent, "/FILE_REQUEST"):
 			args := strings.SplitN(messageContent, " ", 5) // Updated to include checksum
@@ -243,9 +243,67 @@ func handleUserMessages(conn net.Conn, user *interfaces.User, server *interfaces
 func BroadcastMessage(content string, server *interfaces.Server, sender *interfaces.User) {
 	server.Mutex.Lock()
 	defer server.Mutex.Unlock()
+	
+	// Create a JSON message
+	message := &interfaces.Message{
+		SenderId:       sender.UserId,
+		SenderUsername: sender.Username,
+		Content:        content,
+		Timestamp:      time.Now().Format("2006-01-02 15:04:05"),
+		Type:           "chat",
+	}
+	
+	// Convert to JSON
+	jsonMsg, err := message.ToJSON()
+	if err != nil {
+		fmt.Printf("Error encoding message to JSON: %v\n", err)
+		// Fallback to old format
+		for _, recipient := range server.Connections {
+			if recipient.IsOnline && recipient != sender {
+				_, _ = recipient.Conn.Write([]byte(fmt.Sprintf("%s: %s\n", sender.Username, content)))
+			}
+		}
+		return
+	}
+	
+	// Send JSON message to all online recipients
 	for _, recipient := range server.Connections {
 		if recipient.IsOnline && recipient != sender {
-			_, _ = recipient.Conn.Write([]byte(fmt.Sprintf("%s: %s\n", sender.Username, content)))
+			_, _ = recipient.Conn.Write([]byte(jsonMsg + "\n"))
+		}
+	}
+}
+
+func BroadcastSystemMessage(content string, server *interfaces.Server, sender *interfaces.User) {
+	server.Mutex.Lock()
+	defer server.Mutex.Unlock()
+	
+	// Create a JSON system message
+	message := &interfaces.Message{
+		SenderId:       "system",
+		SenderUsername: "System",
+		Content:        content,
+		Timestamp:      time.Now().Format("2006-01-02 15:04:05"),
+		Type:           "system",
+	}
+	
+	// Convert to JSON
+	jsonMsg, err := message.ToJSON()
+	if err != nil {
+		fmt.Printf("Error encoding system message to JSON: %v\n", err)
+		// Fallback to old format
+		for _, recipient := range server.Connections {
+			if recipient.IsOnline && recipient != sender {
+				_, _ = recipient.Conn.Write([]byte(content + "\n"))
+			}
+		}
+		return
+	}
+	
+	// Send JSON message to all online recipients
+	for _, recipient := range server.Connections {
+		if recipient.IsOnline && recipient != sender {
+			_, _ = recipient.Conn.Write([]byte(jsonMsg + "\n"))
 		}
 	}
 }
@@ -261,7 +319,7 @@ func StartHeartBeat(interval time.Duration, server *interfaces.Server) {
 					if err != nil {
 						fmt.Printf("User disconnected: %s\n", user.Username)
 						user.IsOnline = false
-						BroadcastMessage(fmt.Sprintf("User %s is now offline", user.Username), server, user)
+						BroadcastSystemMessage(fmt.Sprintf("User %s is now offline", user.Username), server, user)
 					}
 				}
 			}

@@ -2,6 +2,7 @@ package connection
 
 import (
 	"bufio"
+	"drizlink/server/interfaces"
 	"drizlink/utils"
 	"errors"
 	"fmt"
@@ -245,14 +246,40 @@ func ReadLoop(conn net.Conn) {
 			HandleDownloadResponse(conn, userId, filePath)
 			continue
 		default:
-			if strings.Contains(message, "has joined the chat") {
-				fmt.Println(utils.WarningColor("👋 " + message))
-			} else if strings.Contains(message, "has rejoined the chat") {
-				fmt.Println(utils.WarningColor("🔄 " + message))
-			} else if strings.Contains(message, "is now offline") {
-				fmt.Println(utils.WarningColor("👋 " + message))
+			// Try to parse as JSON message first
+			if msg, err := interfaces.MessageFromJSON(message); err == nil {
+				// Successfully parsed as JSON
+				switch msg.Type {
+				case "system":
+					if strings.Contains(msg.Content, "has joined the chat") {
+						fmt.Println(utils.WarningColor("👋 " + msg.Content))
+					} else if strings.Contains(msg.Content, "has rejoined the chat") {
+						fmt.Println(utils.WarningColor("🔄 " + msg.Content))
+					} else if strings.Contains(msg.Content, "is now offline") {
+						fmt.Println(utils.WarningColor("👋 " + msg.Content))
+					} else {
+						fmt.Println(utils.InfoColor(msg.Content))
+					}
+				case "chat":
+					fmt.Printf("%s %s: %s\n", 
+						utils.InfoColor(msg.Timestamp),
+						utils.UserColor(msg.SenderUsername), 
+						msg.Content)
+				default:
+					// Unknown type, display as regular message
+					fmt.Printf("%s: %s\n", msg.SenderUsername, msg.Content)
+				}
 			} else {
-				fmt.Println(message)
+				// Not JSON, handle as legacy plain text message
+				if strings.Contains(message, "has joined the chat") {
+					fmt.Println(utils.WarningColor("👋 " + message))
+				} else if strings.Contains(message, "has rejoined the chat") {
+					fmt.Println(utils.WarningColor("🔄 " + message))
+				} else if strings.Contains(message, "is now offline") {
+					fmt.Println(utils.WarningColor("👋 " + message))
+				} else {
+					fmt.Println(message)
+				}
 			}
 		}
 	}
