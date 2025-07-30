@@ -53,3 +53,8 @@ build/
 # Temporary files
 tmp/
 temp/
+
+# Application binaries
+server_bin
+client_bin
+DrizLink_Cli
