@@ -127,7 +127,23 @@ func handleUserMessages(conn net.Conn, user *interfaces.User, server *interfaces
 			return
 		}
 
-		messageContent := string(buffer[:n])
+		rawMessage := strings.TrimSpace(string(buffer[:n]))
+		
+		// Try to parse as JSON message first
+		if msg, err := interfaces.FromJSON([]byte(rawMessage)); err == nil {
+			switch msg.Type {
+			case interfaces.MessageTypeChat:
+				// For chat messages, broadcast the content
+				BroadcastMessage(msg.Content, server, user)
+				continue
+			case interfaces.MessageTypePong:
+				// Handle pong response (heartbeat)
+				continue
+			}
+		}
+		
+		// Fall back to legacy string message handling
+		messageContent := rawMessage
 
 		switch {
 		case messageContent == "/exit":
@@ -188,20 +204,32 @@ func handleUserMessages(conn net.Conn, user *interfaces.User, server *interfaces
 		case messageContent == "PONG\n":
 			continue
 		case strings.HasPrefix(messageContent, "/status"):
-			_, err = conn.Write([]byte("USERS:"))
-			if err != nil {
-				fmt.Println("Error sending user list header:", err)
-				continue
-			}
+			// Create user list message
+			var userList []map[string]string
+			server.Mutex.Lock()
 			for _, user := range server.Connections {
 				if user.IsOnline {
-					statusMsg := fmt.Sprintf("%s (%s) is online\n", user.Username, user.UserId)
-					_, err = conn.Write([]byte(statusMsg))
-					if err != nil {
-						fmt.Println("Error sending user list:", err)
-						continue
-					}
+					userList = append(userList, map[string]string{
+						"username": user.Username,
+						"user_id":  user.UserId,
+						"status":   "online",
+					})
 				}
+			}
+			server.Mutex.Unlock()
+
+			message := interfaces.NewMessage(interfaces.MessageTypeUserList, "", "system", "User list")
+			message.AddMetadata("users", userList)
+			jsonData, err := message.ToJSON()
+			if err != nil {
+				fmt.Printf("Error encoding user list to JSON: %v\n", err)
+				continue
+			}
+
+			_, err = conn.Write(append(jsonData, '\n'))
+			if err != nil {
+				fmt.Println("Error sending user list:", err)
+				continue
 			}
 			continue
 		case strings.HasPrefix(messageContent, "/LOOK"):
@@ -241,11 +269,26 @@ func handleUserMessages(conn net.Conn, user *interfaces.User, server *interfaces
 }
 
 func BroadcastMessage(content string, server *interfaces.Server, sender *interfaces.User) {
+	// Determine message type based on content
+	var msgType interfaces.MessageType
+	if strings.Contains(content, "joined the chat") || strings.Contains(content, "rejoined the chat") || strings.Contains(content, "is now offline") {
+		msgType = interfaces.MessageTypeSystem
+	} else {
+		msgType = interfaces.MessageTypeChat
+	}
+
+	message := interfaces.NewMessage(msgType, sender.UserId, sender.Username, content)
+	jsonData, err := message.ToJSON()
+	if err != nil {
+		fmt.Printf("Error encoding message to JSON: %v\n", err)
+		return
+	}
+
 	server.Mutex.Lock()
 	defer server.Mutex.Unlock()
 	for _, recipient := range server.Connections {
 		if recipient.IsOnline && recipient != sender {
-			_, _ = recipient.Conn.Write([]byte(fmt.Sprintf("%s: %s\n", sender.Username, content)))
+			_, _ = recipient.Conn.Write(append(jsonData, '\n'))
 		}
 	}
 }
@@ -257,7 +300,13 @@ func StartHeartBeat(interval time.Duration, server *interfaces.Server) {
 			server.Mutex.Lock()
 			for _, user := range server.Connections {
 				if user.IsOnline {
-					_, err := user.Conn.Write([]byte("PING\n"))
+					pingMessage := interfaces.NewMessage(interfaces.MessageTypePing, "system", "system", "ping")
+					jsonData, err := pingMessage.ToJSON()
+					if err != nil {
+						fmt.Printf("Error encoding ping message: %v\n", err)
+						continue
+					}
+					_, err = user.Conn.Write(append(jsonData, '\n'))
 					if err != nil {
 						fmt.Printf("User disconnected: %s\n", user.Username)
 						user.IsOnline = false

@@ -2,6 +2,7 @@ package connection
 
 import (
 	"bufio"
+	"drizlink/server/interfaces"
 	"drizlink/utils"
 	"errors"
 	"fmt"
@@ -92,7 +93,71 @@ func ReadLoop(conn net.Conn) {
 			fmt.Println(utils.ErrorColor("❌ Connection lost:"), err)
 			return
 		}
-		message := string(buffer[:n])
+		rawMessage := strings.TrimSpace(string(buffer[:n]))
+		
+		// Try to parse as JSON message first
+		if msg, err := interfaces.FromJSON([]byte(rawMessage)); err == nil {
+			switch msg.Type {
+			case interfaces.MessageTypeChat:
+				if msg.SenderUsername != "" {
+					fmt.Printf("%s: %s\n", msg.SenderUsername, msg.Content)
+				} else {
+					fmt.Println(msg.Content)
+				}
+				continue
+			case interfaces.MessageTypeSystem:
+				if strings.Contains(msg.Content, "has joined the chat") {
+					fmt.Println(utils.WarningColor("👋 " + msg.Content))
+				} else if strings.Contains(msg.Content, "has rejoined the chat") {
+					fmt.Println(utils.WarningColor("🔄 " + msg.Content))
+				} else if strings.Contains(msg.Content, "is now offline") {
+					fmt.Println(utils.WarningColor("👋 " + msg.Content))
+				} else {
+					fmt.Println(utils.InfoColor(msg.Content))
+				}
+				continue
+			case interfaces.MessageTypePing:
+				// Respond with pong
+				pongMsg := interfaces.NewMessage(interfaces.MessageTypePong, "", "", "pong")
+				jsonData, err := pongMsg.ToJSON()
+				if err != nil {
+					fmt.Println(utils.ErrorColor("❌ Error creating pong response:"), err)
+					continue
+				}
+				_, err = conn.Write(append(jsonData, '\n'))
+				if err != nil {
+					fmt.Println(utils.ErrorColor("❌ Error responding to heartbeat:"), err)
+				}
+				continue
+			case interfaces.MessageTypeUserList:
+				if users, ok := msg.Metadata["users"].([]interface{}); ok {
+					fmt.Println(utils.HeaderColor("\n👥 Online Users:"))
+					fmt.Println(utils.InfoColor("-------------------"))
+					
+					if len(users) == 0 {
+						fmt.Println(utils.InfoColor(" No users currently online"))
+					} else {
+						for _, userInterface := range users {
+							if user, ok := userInterface.(map[string]interface{}); ok {
+								username := user["username"].(string)
+								userId := user["user_id"].(string)
+								fmt.Printf("%s %s %s %s %s\n",
+									utils.SuccessColor(" •"),
+									utils.UserColor(username),
+									utils.InfoColor("(ID:"),
+									utils.CommandColor(userId),
+									utils.InfoColor(") is online"))
+							}
+						}
+					}
+					fmt.Println(utils.InfoColor("-------------------"))
+				}
+				continue
+			}
+		}
+		
+		// Fall back to legacy string message handling for backward compatibility
+		message := rawMessage
 		switch {
 		case strings.HasPrefix(message, "/FILE_RESPONSE"):
 			fmt.Println(utils.InfoColor("📥 File transfer starting..."))
@@ -346,7 +411,14 @@ func WriteLoop(conn net.Conn) {
 			continue
 		default:
 			if message != "" {
-				_, err := conn.Write([]byte(message))
+				// Send regular chat messages as JSON
+				chatMsg := interfaces.NewMessage(interfaces.MessageTypeChat, "", "", message)
+				jsonData, err := chatMsg.ToJSON()
+				if err != nil {
+					fmt.Println(utils.ErrorColor("❌ Error encoding message:"), err)
+					continue
+				}
+				_, err = conn.Write(append(jsonData, '\n'))
 				if err != nil {
 					fmt.Println(utils.ErrorColor("❌ Error sending message:"), err)
 					return
